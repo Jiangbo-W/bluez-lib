@@ -21,6 +21,7 @@
 #include <gio/gio.h>
 
 #include "bluez-common.h"
+#include "bluez-device.h"
 #include "bluez-adapter.h"
 
 struct bluez_adapter {
@@ -51,6 +52,19 @@ BTResult bluez_adapter_stop_discovery(struct bluez_adapter *adapter)
 gchar **bluez_adapter_get_property_names(struct bluez_adapter *adapter)
 {
 	return g_dbus_proxy_get_cached_property_names(adapter->adapter_proxy);
+}
+
+BTResult bluez_adapter_remove_device(struct bluez_adapter *adapter,
+						struct bluez_device *device)
+{
+	GVariant *parameter;
+	const gchar *path;
+
+	path = bluez_device_get_path(device);
+
+	parameter = g_variant_new("(o)", path);
+
+	return proxy_method_call(adapter->adapter_proxy, "RemoveDevice", parameter);
 }
 
 BTResult bluez_adapter_set_powered(struct bluez_adapter *adapter, gboolean powered)

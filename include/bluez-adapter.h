@@ -31,6 +31,7 @@ extern "C"
 #include "bluez-common.h"
 
 struct bluez_adapter;
+struct bluez_device;
 
 typedef void (*adapter_property_watch) (struct bluez_adapter *adapter,
 							gchar **prop_names);
@@ -39,6 +40,9 @@ typedef void (*adapter_property_watch) (struct bluez_adapter *adapter,
 BTResult bluez_adapter_start_discovery(struct bluez_adapter *adapter);
 
 BTResult bluez_adapter_stop_discovery(struct bluez_adapter *adapter);
+
+BTResult bluez_adapter_remove_device(struct bluez_adapter *adapter,
+						struct bluez_device *device);
 
 gchar **bluez_adapter_get_property_names(struct bluez_adapter *adapter);
 

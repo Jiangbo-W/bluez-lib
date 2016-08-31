@@ -20,8 +20,10 @@
 #include <stdio.h>
 #include <glib.h>
 #include <gio/gio.h>
+#include <string.h>
 
 #include "bluez-adapter.h"
+#include "bluez-device.h"
 #include "bluez-manager.h"
 
 struct bluez_manager {
@@ -30,11 +32,312 @@ struct bluez_manager {
 	GCancellable *get_managed_objects_call;
 
 	GHashTable *adapters_hash;
+	GHashTable *devices_hash;
+
+	GDBusProxy *agent_proxy;
+	GDBusProxy *profile_proxy;
+
+	guint agent_id;				/* registered agent ID */
+	GDBusMethodInvocation *ivct;		/* Agent reply invocation */
+	agent_request_cb agent_cb;		/* Agent request callback */
+	void *agent_user_data;			/* Agent user data */
 
 	bluez_adapter_added_cb adapter_added;
 	bluez_adapter_removed_cb adapter_removed;
 	gpointer adapter_user_data;
+
+	bluez_device_added_cb device_added;
+	bluez_device_removed_cb device_removed;
+	gpointer device_user_data;
 };
+
+static GDBusNodeInfo *node_info;
+
+static const gchar introspection_xml[] =
+	"<node>"
+	"  <interface name='org.bluez.Agent1'>"
+	"    <method name='Release'>"
+	"    </method>"
+	"    <method name='RequestPinCode'>"
+	"      <arg type='o' name='device' direction='in'/>"
+	"      <arg type='s' direction='out'/>"
+	"    </method>"
+	"    <method name='DisplayPinCode'>"
+	"      <arg type='o' name='device' direction='in'/>"
+	"      <arg type='s' name='pincode' direction='in'/>"
+	"    </method>"
+	"    <method name='RequestPasskey'>"
+	"      <arg type='o' name='device' direction='in'/>"
+	"      <arg type='u' direction='out'/>"
+	"    </method>"
+	"    <method name='DisplayPasskey'>"
+	"      <arg type='o' name='device' direction='in'/>"
+	"      <arg type='u' name='passkey' direction='in'/>"
+	"      <arg type='q' name='entered' direction='in'/>"
+	"    </method>"
+	"    <method name='RequestConfirmation'>"
+	"      <arg type='o' name='device' direction='in'/>"
+	"      <arg type='u' name='passkey' direction='in'/>"
+	"    </method>"
+	"    <method name='RequestAuthorization'>"
+	"      <arg type='o' name='device' direction='in'/>"
+	"    </method>"
+	"    <method name='AuthorizeService'>"
+	"      <arg type='o' name='device' direction='in'/>"
+	"      <arg type='s' name='uuid' direction='in'/>"
+	"    </method>"
+	"    <method name='Cancel'>"
+	"    </method>"
+	"  </interface>"
+	"</node>";
+
+static void passkey_reply(struct bluez_manager *manager,
+						int accept, uint8_t *code)
+{
+	guint32 *passkey = (guint32 *) code;
+	GVariant *value;
+
+	if (accept == FALSE) {
+		g_dbus_method_invocation_return_dbus_error(manager->ivct,
+				BLUEZ_SERVICE_NAME "Error.Rejected", "Rejected");
+
+		return;
+	}
+
+	value = g_variant_new("(u)", *passkey);
+
+	g_dbus_method_invocation_return_value(manager->ivct, value);
+}
+
+static void pincode_reply(struct bluez_manager *manager,
+						int accept, uint8_t *code)
+{
+	char *pincode = (char *) code;
+	GVariant *value;
+
+	if (accept == FALSE) {
+		g_dbus_method_invocation_return_dbus_error(manager->ivct,
+				BLUEZ_SERVICE_NAME "Error.Rejected", "Rejected");
+
+		return;
+	}
+
+	value = g_variant_new("(s)", pincode);
+
+	g_dbus_method_invocation_return_value(manager->ivct, value);
+}
+
+static void display_reply(struct bluez_manager *manager,
+						int accept, uint8_t *code)
+{
+	/* Ignore paremters, reply directly */
+	g_dbus_method_invocation_return_value(manager->ivct, NULL);
+}
+
+static void confirm_reply(struct bluez_manager *manager,
+						int accept, uint8_t *code)
+{
+	if (accept == FALSE) {
+		g_dbus_method_invocation_return_dbus_error(manager->ivct,
+				BLUEZ_SERVICE_NAME "Error.Rejected", "Rejected");
+
+		return;
+	}
+
+	g_dbus_method_invocation_return_value(manager->ivct, NULL);
+}
+
+static void release_reply(struct bluez_manager *manager)
+{
+	if (manager->ivct == NULL)
+		return;
+
+	g_object_unref(manager->ivct);
+	manager->ivct = NULL;
+}
+
+BTResult bluez_manager_agent_reply(struct bluez_manager *manager,
+						int accept, uint8_t *code)
+{
+	const gchar *method;
+
+	if (manager == NULL)
+		return BT_RESULT_INVALID_ARGS;
+
+	if (manager->ivct == NULL)
+		return BT_RESULT_NOT_EXIST;
+
+	method = g_dbus_method_invocation_get_method_name(manager->ivct);
+	if (!g_strcmp0(method, "DisplayPinCode"))
+		display_reply(manager, accept, code);
+	else if (!g_strcmp0(method, "RequestPinCode"))
+		pincode_reply(manager, accept, code);
+	else if (!g_strcmp0(method, "DisplayPasskey"))
+		display_reply(manager, accept, code);
+	else if (!g_strcmp0(method, "RequestPasskey"))
+		passkey_reply(manager, accept, code);
+	else if (!g_strcmp0(method, "RequestConfirmation"))
+		confirm_reply(manager, accept, code);
+	else if (!g_strcmp0(method, "RequestAuthorization"))
+		confirm_reply(manager, accept, code);
+	else if (!g_strcmp0(method, "AuthorizeService"))
+		confirm_reply(manager, accept, code);
+	else if (!g_strcmp0(method, "Cancel"))
+		display_reply(manager, accept, code);
+	else if (!g_strcmp0(method, "Release"))
+		release_reply(manager);
+
+	return BT_RESULT_OK;
+}
+
+static void handle_agent_method(GDBusConnection *conn, const gchar *sender,
+				const gchar *path, const gchar *interface,
+				const char *method, GVariant *value,
+				GDBusMethodInvocation *ivct, gpointer data)
+{
+	struct bluez_manager *manager = (struct bluez_manager *) data;
+	gchar *device_path = NULL, *pincode = NULL, *uuid = NULL;
+	enum agent_request_type type;
+	void *request_data;
+	guint32 passkey;
+	guint16 entered;
+	gchar *address;
+
+	if (manager->agent_cb == NULL) {
+		printf("Failed to auth request. No agent request callback\n");
+
+		/* TODO: Reply error */
+		g_dbus_method_invocation_return_value(ivct, NULL);
+
+		return;
+	}
+
+	manager->ivct = ivct;
+
+	request_data = NULL;
+	printf("agent method: %s\n", method);
+	if (g_strcmp0(method, "Release") == 0) {
+		type = AGENT_REQUEST_RELEASE;
+	} else if (g_strcmp0(method, "DisplayPinCode") == 0) {
+		g_variant_get(value, "(os)", &device_path, &pincode);
+
+		type = AGENT_REQUEST_DISPLAY_PINCODE;
+		request_data = pincode;
+	} else if (g_strcmp0(method, "RequestPinCode") == 0) {
+		g_variant_get(value, "(o)", &device_path);
+
+		type = AGENT_REQUEST_PINCODE;
+	} else if (g_strcmp0(method, "DisplayPasskey") == 0) {
+		g_variant_get(value, "(ouq)", &device_path,
+						&passkey, &entered);
+
+		type = AGENT_REQUEST_DISPLAY_PASSKEY;
+	} else if (g_strcmp0(method, "RequestPasskey") == 0) {
+		g_variant_get(value, "(o)", &device_path);
+
+		type = AGENT_REQUEST_PASSKEY;
+	} else if (g_strcmp0(method, "RequestConfirmation") == 0) {
+		g_variant_get(value, "(ou)", &device_path, &passkey);
+
+		type = AGENT_REQUEST_CONFIRMATION;
+		request_data = &passkey;
+	} else if (g_strcmp0(method, "RequestAuthorization") == 0) {
+		g_variant_get(value, "(o)", &device_path);
+
+		type = AGENT_REQUEST_AUTHORIZATION;
+	} else if (g_strcmp0(method, "AuthorizeService") == 0) {
+		g_variant_get(value, "(os)", &device_path, &uuid);
+
+		type = AGENT_REQUEST_AUTHORIZESERVICE;
+	} else if (g_strcmp0(method, "Cancel") == 0) {
+		type = AGENT_REQUEST_CANCEL;
+	} else {
+		type = AGENT_REQUEST_CANCEL;
+		printf("Agent Method: %s\n", method);
+	}
+
+	if (type != AGENT_REQUEST_CANCEL && type != AGENT_REQUEST_RELEASE) {
+		address = g_strdup(g_strrstr(device_path, "dev_") + strlen("dev_"));
+		g_strdelimit(address, "_", ':');
+	} else
+		address = NULL;
+
+	manager->agent_cb(type, address, request_data,
+					manager->agent_user_data);
+
+	g_free(address);
+	g_free(device_path);
+
+	if (pincode)
+		g_free(pincode);
+
+	if (uuid)
+		g_free(uuid);
+}
+
+static BTResult register_agent(struct bluez_manager *manager, const gchar *path)
+{
+	GVariant *parameter;
+
+	if (manager->agent_proxy == NULL)
+		return BT_RESULT_NOT_READY;
+
+	parameter = g_variant_new("(os)", path, "DisplayYesNo");
+
+	return proxy_method_call(manager->agent_proxy,
+					"RegisterAgent", parameter);
+}
+
+static BTResult set_default_agent(struct bluez_manager *manager,
+							const gchar *path)
+{
+	GVariant *parameter;
+
+	if (manager->agent_proxy == NULL)
+		return BT_RESULT_NOT_READY;
+
+	parameter = g_variant_new("(o)", path);
+
+	return proxy_method_call(manager->agent_proxy,
+					"RequestDefaultAgent", parameter);
+}
+
+static const GDBusInterfaceVTable interface_handle = {
+	handle_agent_method,
+	NULL,
+	NULL
+};
+
+gboolean bluez_manager_register_agent(struct bluez_manager *manager,
+					agent_request_cb cb, void *user_data)
+{
+	guint agent_id;
+
+	node_info = g_dbus_node_info_new_for_xml(introspection_xml, NULL);
+
+	agent_id = g_dbus_connection_register_object(manager->conn, AGENT_PATH,
+				node_info->interfaces[0], &interface_handle,
+				manager, NULL, NULL);
+
+	manager->agent_id = agent_id;
+	manager->agent_cb = cb;
+	manager->agent_user_data = user_data;
+
+	g_dbus_node_info_unref(node_info);
+
+	/* Register agent to BlueZ */
+	if (register_agent(manager, AGENT_PATH) != BT_RESULT_OK) {
+		printf("BlueZ Agent is not available, auto register later.\n");
+
+		return TRUE;
+	}
+
+	set_default_agent(manager, AGENT_PATH);
+
+	printf("BlueZ Agent register success\n");
+
+	return TRUE;
+}
 
 static gboolean add_bluez_adapter(struct bluez_manager* manager,
 						GDBusObject *object)
@@ -83,6 +386,100 @@ static gboolean remove_bluez_adapter(struct bluez_manager *manager,
 	return TRUE;
 }
 
+static gboolean add_bluez_device(struct bluez_manager *manager,
+						GDBusObject *object)
+{
+	struct bluez_device *device;
+	const gchar *object_path;
+
+	object_path = g_dbus_object_get_object_path(object);
+	device = g_hash_table_lookup(manager->devices_hash, object_path);
+	if (device) {
+		printf("device already exist in device HashTable.\n");
+		return FALSE;
+	}
+
+	device = bluez_device_new(object);
+	if (!device)
+		return FALSE;
+
+	g_hash_table_replace(manager->devices_hash,
+				g_strdup(object_path), device);
+
+	if (manager->device_added)
+		manager->device_added(device, manager->device_user_data);
+
+	return TRUE;
+}
+
+static gboolean remove_bluez_device(struct bluez_manager *manager,
+						GDBusObject *object)
+{
+	struct bluez_device *device;
+	const gchar *object_path;
+
+	object_path = g_dbus_object_get_object_path(object);
+	device = g_hash_table_lookup(manager->devices_hash, object_path);
+	if (!device) {
+		printf("device is not exist in device HashTable.\n");
+		return FALSE;
+	}
+
+	if (manager->device_removed)
+		manager->device_removed(device, manager->device_user_data);
+
+	g_hash_table_remove(manager->devices_hash, object_path);
+
+	return TRUE;
+}
+
+static void parse_bluez_root(struct bluez_manager *manager,
+						GDBusObject *object)
+{
+	GDBusInterface *interface;
+	GDBusProxy *proxy;
+	BTResult ret;
+
+	/* org.bluez.AgentManager1 */
+	interface = g_dbus_object_get_interface(object, AGENT_INTERFACE);
+	if (interface != NULL) {
+		proxy = G_DBUS_PROXY(interface);
+		manager->agent_proxy = proxy;
+
+		if (manager->agent_id) {
+			ret = register_agent(manager, AGENT_PATH);
+			if (ret == BT_RESULT_OK) {
+				set_default_agent(manager, AGENT_PATH);
+
+				printf("BlueZ Agent register success\n");
+			} else
+				printf("Failed to register agent\n");
+		}
+	}
+
+	/* org.bluez.ProfileManager1 */
+	interface = g_dbus_object_get_interface(object, PROFILE_INTERFACE);
+	if (interface != NULL) {
+		proxy = G_DBUS_PROXY(interface);
+		manager->profile_proxy = proxy;
+	}
+}
+
+static gboolean remove_bluez_root(struct bluez_manager *manager,
+						GDBusObject *object)
+{
+	if (manager->agent_proxy)
+		g_object_unref(manager->agent_proxy);
+
+	if (manager->profile_proxy)
+		g_object_unref(manager->profile_proxy);
+
+	manager->agent_proxy = NULL;
+	manager->profile_proxy = NULL;
+
+	return TRUE;
+}
+
 static gboolean foreach_adapter_removed(gpointer key, gpointer value,
 							gpointer user_data)
 {
@@ -90,6 +487,17 @@ static gboolean foreach_adapter_removed(gpointer key, gpointer value,
 
 	if (manager->adapter_removed)
 		manager->adapter_removed(value, manager->adapter_user_data);
+
+	return TRUE;
+}
+
+static gboolean foreach_device_removed(gpointer key, gpointer value,
+							gpointer user_data)
+{
+	struct bluez_manager *manager = (struct bluez_manager *) user_data;
+
+	if (manager->device_removed)
+		manager->device_removed(value, manager->adapter_user_data);
 
 	return TRUE;
 }
@@ -116,6 +524,16 @@ static void parse_bluez_object(struct bluez_manager *manager,
 		add_bluez_adapter(manager, object);
 		return;
 	}
+
+	if (bluez_object_has_interface(object, DEVICE_INTERFACE)) {
+		add_bluez_device(manager, object);
+		return;
+	}
+
+	if (bluez_object_has_interface(object, AGENT_INTERFACE)) {
+		parse_bluez_root(manager, object);
+		return;
+	}
 }
 
 static void object_added(GDBusObjectManager *manager, GDBusObject *object,
@@ -131,6 +549,16 @@ static void object_removed(GDBusObjectManager *manager, GDBusObject *object,
 
 	if (bluez_object_has_interface(object, ADAPTER_INTERFACE)) {
 		remove_bluez_adapter(bluez_manager, object);
+		return;
+	}
+
+	if (bluez_object_has_interface(object, DEVICE_INTERFACE)) {
+		remove_bluez_device(bluez_manager, object);
+		return;
+	}
+
+	if (bluez_object_has_interface(object, AGENT_INTERFACE)) {
+		remove_bluez_root(bluez_manager, object);
 		return;
 	}
 }
@@ -223,6 +651,9 @@ struct bluez_manager *bluez_manager_new(void)
 	manager->adapters_hash = g_hash_table_new_full(g_str_hash, g_str_equal,
 					g_free,
 					(GDestroyNotify) bluez_adapter_free);
+	manager->devices_hash = g_hash_table_new_full(g_str_hash, g_str_equal,
+					g_free,
+					(GDestroyNotify) bluez_device_free);
 
 	return manager;
 }
@@ -231,6 +662,12 @@ void bluez_manager_free(struct bluez_manager *manager)
 {
 	if (!manager)
 		return;
+
+	if (manager->devices_hash) {
+		g_hash_table_foreach_remove(manager->devices_hash,
+					foreach_device_removed, manager);
+		g_hash_table_unref(manager->devices_hash);
+	}
 
 	if (manager->adapters_hash) {
 		g_hash_table_foreach_remove(manager->adapters_hash,
@@ -242,6 +679,16 @@ void bluez_manager_free(struct bluez_manager *manager)
 		g_cancellable_cancel(manager->get_managed_objects_call);
 		g_object_unref(manager->get_managed_objects_call);
 	}
+
+	if (manager->agent_id)
+		g_dbus_connection_unregister_object(manager->conn,
+							manager->agent_id);
+
+	if (manager->agent_proxy)
+		g_object_unref(manager->agent_proxy);
+
+	if (manager->profile_proxy)
+		g_object_unref(manager->profile_proxy);
 
 	if (manager->object_manager)
 		g_object_unref(manager->object_manager);
@@ -262,6 +709,21 @@ gboolean bluez_manager_set_adapter_watch(struct bluez_manager *manager,
 	manager->adapter_added = adapter_added;
 	manager->adapter_removed = adapter_removed;
 	manager->adapter_user_data = user_data;
+
+	return TRUE;
+}
+
+gboolean bluez_manager_set_device_watch(struct bluez_manager *manager,
+				bluez_device_added_cb device_added,
+				bluez_device_removed_cb device_removed,
+				gpointer user_data)
+{
+	if (manager == NULL)
+		return FALSE;
+
+	manager->device_added = device_added;
+	manager->device_removed = device_removed;
+	manager->device_user_data = user_data;
 
 	return TRUE;
 }

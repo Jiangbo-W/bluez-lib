@@ -7,7 +7,8 @@ SET(BLUEZ_LIB "bluez-lib")
 SET(SOURCE_BLUEZ_LIB
 	src/bluez-manager.c
 	src/bluez-common.c
-	src/bluez-adapter.c)
+	src/bluez-adapter.c
+	src/bluez-device.c)
 
 INCLUDE_DIRECTORIES(${CMAKE_CURRENT_SOURCE_DIR}/include
 			${CMAKE_CURRENT_SOURCE_DIR}/src)
