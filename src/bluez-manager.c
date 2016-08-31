@@ -17,29 +17,153 @@
  *
  */
 
+#include <stdio.h>
 #include <glib.h>
 #include <gio/gio.h>
 
+#include "bluez-adapter.h"
 #include "bluez-manager.h"
 
 struct bluez_manager {
 	GDBusConnection *conn;
 	GDBusObjectManager *object_manager;
 	GCancellable *get_managed_objects_call;
+
+	GHashTable *adapters_hash;
+
+	bluez_adapter_added_cb adapter_added;
+	bluez_adapter_removed_cb adapter_removed;
+	gpointer adapter_user_data;
 };
 
-static void parse_managed_objects(struct bluez_manager *manager)
+static gboolean add_bluez_adapter(struct bluez_manager* manager,
+						GDBusObject *object)
 {
+	struct bluez_adapter *adapter;
+	const gchar *object_path;
+
+	object_path = g_dbus_object_get_object_path(object);
+	adapter = g_hash_table_lookup(manager->adapters_hash, object_path);
+	if (adapter) {
+		printf("adapter already exist in adapter HashTable.\n");
+		return FALSE;
+	}
+
+	adapter = bluez_adapter_new(object);
+	if (!adapter)
+		return FALSE;
+
+	g_hash_table_replace(manager->adapters_hash,
+				g_strdup(object_path), adapter);
+
+	if (manager->adapter_added)
+		manager->adapter_added(adapter, manager->adapter_user_data);
+
+	return TRUE;
+}
+
+static gboolean remove_bluez_adapter(struct bluez_manager *manager,
+						GDBusObject *object)
+{
+	struct bluez_adapter *adapter;
+	const gchar *object_path;
+
+	object_path = g_dbus_object_get_object_path(object);
+	adapter = g_hash_table_lookup(manager->adapters_hash, object_path);
+	if (!adapter) {
+		printf("adapter is not exist in adapter HashTable\n");
+		return FALSE;
+	}
+
+	if (manager->adapter_removed)
+		manager->adapter_removed(adapter, manager->adapter_user_data);
+
+	g_hash_table_remove(manager->adapters_hash, object_path);
+
+	return TRUE;
+}
+
+static gboolean foreach_adapter_removed(gpointer key, gpointer value,
+							gpointer user_data)
+{
+	struct bluez_manager *manager = (struct bluez_manager *) user_data;
+
+	if (manager->adapter_removed)
+		manager->adapter_removed(value, manager->adapter_user_data);
+
+	return TRUE;
+}
+
+static gboolean bluez_object_has_interface(GDBusObject *object,
+						const gchar *interface_name)
+{
+	GDBusInterface *interface;
+
+	interface = g_dbus_object_get_interface(object, interface_name);
+
+	if (interface == NULL)
+		return FALSE;
+
+	g_object_unref(interface);
+
+	return TRUE;
+}
+
+static void parse_bluez_object(struct bluez_manager *manager,
+					GDBusObject *object)
+{
+	if (bluez_object_has_interface(object, ADAPTER_INTERFACE)) {
+		add_bluez_adapter(manager, object);
+		return;
+	}
 }
 
 static void object_added(GDBusObjectManager *manager, GDBusObject *object,
 							gpointer user_data)
 {
+	parse_bluez_object((struct bluez_manager *)user_data, object);
 }
 
 static void object_removed(GDBusObjectManager *manager, GDBusObject *object,
 							gpointer user_data)
 {
+	struct bluez_manager *bluez_manager = (struct bluez_manager *)user_data;
+
+	if (bluez_object_has_interface(object, ADAPTER_INTERFACE)) {
+		remove_bluez_adapter(bluez_manager, object);
+		return;
+	}
+}
+
+static gint object_sort(GDBusObject *a, GDBusObject *b)
+{
+	const gchar *path_a, *path_b;
+
+	path_a = g_dbus_object_get_object_path(a);
+	path_b = g_dbus_object_get_object_path(b);
+
+	return g_strcmp0(path_a, path_b);
+}
+
+static void parse_managed_objects(struct bluez_manager *manager)
+{
+	GList *objects, *list, *next;
+	GDBusObject *object;
+
+	objects = g_dbus_object_manager_get_objects(manager->object_manager);
+	objects = g_list_sort(objects, (GCompareFunc) object_sort);
+
+	for  (list = objects; list; list = next) {
+		next = g_list_next(list);
+
+		object = list->data;
+
+		parse_bluez_object(manager,object);
+
+		g_object_unref(object);
+	}
+
+	g_list_free(objects);
 }
 
 static void get_managed_objects_reply(GObject *object, GAsyncResult *res,
@@ -96,6 +220,10 @@ struct bluez_manager *bluez_manager_new(void)
 
 	manager->conn = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, NULL);
 
+	manager->adapters_hash = g_hash_table_new_full(g_str_hash, g_str_equal,
+					g_free,
+					(GDestroyNotify) bluez_adapter_free);
+
 	return manager;
 }
 
@@ -103,6 +231,12 @@ void bluez_manager_free(struct bluez_manager *manager)
 {
 	if (!manager)
 		return;
+
+	if (manager->adapters_hash) {
+		g_hash_table_foreach_remove(manager->adapters_hash,
+					foreach_adapter_removed, manager);
+		g_hash_table_unref(manager->adapters_hash);
+	}
 
 	if (manager->get_managed_objects_call != NULL) {
 		g_cancellable_cancel(manager->get_managed_objects_call);
@@ -115,6 +249,21 @@ void bluez_manager_free(struct bluez_manager *manager)
 	g_object_unref(manager->conn);
 
 	g_free(manager);
+}
+
+gboolean bluez_manager_set_adapter_watch(struct bluez_manager *manager,
+				bluez_adapter_added_cb adapter_added,
+				bluez_adapter_removed_cb adapter_removed,
+				gpointer user_data)
+{
+	if (manager == NULL)
+		return FALSE;
+
+	manager->adapter_added = adapter_added;
+	manager->adapter_removed = adapter_removed;
+	manager->adapter_user_data = user_data;
+
+	return TRUE;
 }
 
 void bluez_manager_refresh_objects(struct bluez_manager *manager)

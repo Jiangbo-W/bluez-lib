@@ -30,12 +30,22 @@ extern "C"
 #include "bluez-common.h"
 
 struct bluez_manager;
+struct bluez_adapter;
 
+typedef void (*bluez_adapter_added_cb) (struct bluez_adapter *adapter,
+						gpointer user_data);
+typedef void (*bluez_adapter_removed_cb) (struct bluez_adapter *adapter,
+						gpointer user_data);
 struct bluez_manager *bluez_manager_new(void);
 
 void bluez_manager_free(struct bluez_manager *manager);
 
 void bluez_manager_refresh_objects(struct bluez_manager *manager);
+
+gboolean bluez_manager_set_adapter_watch(struct bluez_manager *manager,
+				bluez_adapter_added_cb adapter_added,
+				bluez_adapter_removed_cb adapter_removed,
+				gpointer user_data);
 
 #ifdef __cplusplus
 }
