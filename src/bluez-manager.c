@@ -24,6 +24,7 @@
 
 #include "bluez-adapter.h"
 #include "bluez-device.h"
+#include "bluez-service.h"
 #include "bluez-manager.h"
 
 struct bluez_manager {
@@ -33,6 +34,7 @@ struct bluez_manager {
 
 	GHashTable *adapters_hash;
 	GHashTable *devices_hash;
+	GHashTable *services_hash;
 
 	GDBusProxy *agent_proxy;
 	GDBusProxy *profile_proxy;
@@ -49,6 +51,10 @@ struct bluez_manager {
 	bluez_device_added_cb device_added;
 	bluez_device_removed_cb device_removed;
 	gpointer device_user_data;
+
+	bluez_service_added_cb service_added;
+	bluez_service_removed_cb service_removed;
+	gpointer service_user_data;
 };
 
 static GDBusNodeInfo *node_info;
@@ -339,6 +345,29 @@ gboolean bluez_manager_register_agent(struct bluez_manager *manager,
 	return TRUE;
 }
 
+struct bluez_device *find_device_by_address(struct bluez_manager *manager,
+							const gchar *address)
+{
+	GHashTableIter iter;
+	gpointer key, device;
+	gchar *path;
+
+	path = g_strdup(address);
+	g_strdelimit(path, ":", '_');
+
+	g_hash_table_iter_init(&iter, manager->devices_hash);
+	while (g_hash_table_iter_next(&iter, &key, &device)) {
+		if (g_strrstr(key, path)) {
+			g_free(path);
+			return device;
+		}
+	}
+
+	g_free(path);
+
+	return NULL;
+}
+
 static gboolean add_bluez_adapter(struct bluez_manager* manager,
 						GDBusObject *object)
 {
@@ -433,6 +462,53 @@ static gboolean remove_bluez_device(struct bluez_manager *manager,
 	return TRUE;
 }
 
+static gboolean add_bluez_service(struct bluez_manager *manager,
+						GDBusObject *object)
+{
+	struct bluez_service *service;
+	const gchar *object_path;
+
+	object_path = g_dbus_object_get_object_path(object);
+	service = g_hash_table_lookup(manager->services_hash, object_path);
+	if (service) {
+		printf("service already exist in service HashTable.\n");
+		return FALSE;
+	}
+
+	service = bluez_service_new(object);
+	if (!service)
+		return FALSE;
+
+	g_hash_table_replace(manager->services_hash,
+					g_strdup(object_path), service);
+
+	if (manager->service_added)
+		manager->service_added(service, manager->service_user_data);
+
+	return TRUE;
+}
+
+static gboolean remove_bluez_service(struct bluez_manager *manager,
+						GDBusObject *object)
+{
+	struct bluez_service *service;
+	const gchar *object_path;
+
+	object_path = g_dbus_object_get_object_path(object);
+	service = g_hash_table_lookup(manager->services_hash, object_path);
+	if (!service) {
+		printf("service is not exist in service HashTable.\n");
+		return FALSE;
+	}
+
+	if (manager->service_removed)
+		manager->service_removed(service, manager->service_user_data);
+
+	g_hash_table_remove(manager->services_hash, object_path);
+
+	return TRUE;
+}
+
 static void parse_bluez_root(struct bluez_manager *manager,
 						GDBusObject *object)
 {
@@ -502,6 +578,17 @@ static gboolean foreach_device_removed(gpointer key, gpointer value,
 	return TRUE;
 }
 
+static gboolean foreach_service_removed(gpointer key, gpointer value,
+							gpointer user_data)
+{
+	struct bluez_manager *manager = (struct bluez_manager *) user_data;
+
+	if (manager->service_removed)
+		manager->service_removed(value, manager->service_user_data);
+
+	return TRUE;
+}
+
 static gboolean bluez_object_has_interface(GDBusObject *object,
 						const gchar *interface_name)
 {
@@ -530,6 +617,11 @@ static void parse_bluez_object(struct bluez_manager *manager,
 		return;
 	}
 
+	if (bluez_object_has_interface(object, SERVICE_INTERFACE)) {
+		add_bluez_service(manager, object);
+		return;
+	}
+
 	if (bluez_object_has_interface(object, AGENT_INTERFACE)) {
 		parse_bluez_root(manager, object);
 		return;
@@ -554,6 +646,11 @@ static void object_removed(GDBusObjectManager *manager, GDBusObject *object,
 
 	if (bluez_object_has_interface(object, DEVICE_INTERFACE)) {
 		remove_bluez_device(bluez_manager, object);
+		return;
+	}
+
+	if (bluez_object_has_interface(object, SERVICE_INTERFACE)) {
+		remove_bluez_service(bluez_manager, object);
 		return;
 	}
 
@@ -654,6 +751,9 @@ struct bluez_manager *bluez_manager_new(void)
 	manager->devices_hash = g_hash_table_new_full(g_str_hash, g_str_equal,
 					g_free,
 					(GDestroyNotify) bluez_device_free);
+	manager->services_hash = g_hash_table_new_full(g_str_hash, g_str_equal,
+					g_free,
+					(GDestroyNotify) bluez_service_free);
 
 	return manager;
 }
@@ -662,6 +762,12 @@ void bluez_manager_free(struct bluez_manager *manager)
 {
 	if (!manager)
 		return;
+
+	if (manager->services_hash) {
+		g_hash_table_foreach_remove(manager->services_hash,
+					foreach_service_removed, manager);
+		g_hash_table_unref(manager->services_hash);
+	}
 
 	if (manager->devices_hash) {
 		g_hash_table_foreach_remove(manager->devices_hash,
@@ -724,6 +830,21 @@ gboolean bluez_manager_set_device_watch(struct bluez_manager *manager,
 	manager->device_added = device_added;
 	manager->device_removed = device_removed;
 	manager->device_user_data = user_data;
+
+	return TRUE;
+}
+
+gboolean bluez_manager_set_service_watch(struct bluez_manager *manager,
+				bluez_service_added_cb service_added,
+				bluez_service_removed_cb service_removed,
+				gpointer user_data)
+{
+	if (manager == NULL)
+		return FALSE;
+
+	manager->service_added = service_added;
+	manager->service_removed = service_removed;
+	manager->service_user_data = user_data;
 
 	return TRUE;
 }

@@ -31,6 +31,8 @@ extern "C"
 
 struct bluez_manager;
 struct bluez_adapter;
+struct bluez_device;
+struct bluez_service;
 
 enum agent_request_type {
 	AGENT_REQUEST_RELEASE,
@@ -54,6 +56,11 @@ typedef void (*bluez_device_added_cb) (struct bluez_device *device,
 typedef void (*bluez_device_removed_cb) (struct bluez_device *device,
 						gpointer user_data);
 
+typedef void (*bluez_service_added_cb) (struct bluez_service *service,
+						gpointer user_data);
+typedef void (*bluez_service_removed_cb) (struct bluez_service *service,
+						gpointer user_data);
+
 typedef void (*agent_request_cb) (enum agent_request_type type,
 		gchar *device_path, void *request_data, void *user_data);
 
@@ -73,11 +80,19 @@ gboolean bluez_manager_set_device_watch(struct bluez_manager *manager,
 				bluez_device_removed_cb device_removed,
 				gpointer user_data);
 
+gboolean bluez_manager_set_service_watch(struct bluez_manager *manager,
+				bluez_service_added_cb service_added,
+				bluez_service_removed_cb service_removed,
+				gpointer user_data);
+
 BTResult bluez_manager_agent_reply(struct bluez_manager *manager,
 						int accept, uint8_t *code);
 
 gboolean bluez_manager_register_agent(struct bluez_manager *manager,
 					agent_request_cb cb, void *user_data);
+
+struct bluez_device *find_device_by_address(struct bluez_manager *manager,
+							const gchar *address);
 
 #ifdef __cplusplus
 }
