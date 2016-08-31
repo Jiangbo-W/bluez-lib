@@ -55,6 +55,34 @@ typedef enum {
 	BT_RESULT_FAILED
 } BTResult;
 
+const gchar *ret2str(BTResult ret);
+
+typedef void (*bluez_response_cb) (BTResult ret,
+				GVariant *data, void *user_data);
+
+void proxy_method_call_with_reply(GDBusProxy *proxy, const gchar *name,
+		GVariant *parameter, bluez_response_cb func, void *user_data);
+
+BTResult proxy_method_call(GDBusProxy *proxy, const gchar *name,
+							GVariant *parameter);
+
+gboolean property_get_boolean(GDBusProxy *proxy, const gchar *name,
+							gboolean *value);
+
+gboolean property_get_int16(GDBusProxy *proxy, const gchar *name,
+							gint16 *value);
+
+gboolean property_get_uint32(GDBusProxy *proxy, const gchar *name,
+							guint32 *value);
+
+gchar *property_get_string(GDBusProxy *proxy, const gchar *name);
+
+gchar **property_get_strings(GDBusProxy *proxy, const gchar *name);
+
+BTResult property_set_variant(GDBusProxy *proxy, GVariant *variant);
+
+gchar *get_addrstr_from_path(const gchar *path);
+
 #ifdef __cplusplus
 }
 #endif
