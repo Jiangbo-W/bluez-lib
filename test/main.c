@@ -23,11 +23,12 @@
 
 #include "log.h"
 #include "bluez-adapter.h"
+#include "bluez-device.h"
 #include "bluez-manager.h"
 
 GMainLoop *mainloop;
 
-GSList *adapters;
+GSList *adapters, *devices;
 struct bluez_manager *manager;
 struct bluez_adapter *default_adapter;
 
@@ -102,6 +103,14 @@ static guint setup_signal_handle(void)
 	return id;
 }
 
+static void agent_request_callback(enum agent_request_type type,
+			gchar *address, void *request_data, void *user_data)
+{
+	DBG("pairing request %s %d\n", address, type);
+
+	bluez_manager_agent_reply(manager, TRUE, NULL);
+}
+
 static void adapter_added(struct bluez_adapter *adapter, gpointer user_data)
 {
 	gchar *name, *addr;
@@ -149,6 +158,11 @@ static void adapter_added(struct bluez_adapter *adapter, gpointer user_data)
 	default_adapter = adapters ? adapters->data : NULL;
 }
 
+static void device_added(struct bluez_device *adapter, gpointer user_data)
+{
+	DBG("device added");
+}
+
 static void adapter_removed(struct bluez_adapter *adapter, gpointer user_data)
 {
 	DBG("adapter %p removed", adapter);
@@ -156,6 +170,11 @@ static void adapter_removed(struct bluez_adapter *adapter, gpointer user_data)
 	adapters = g_slist_remove(adapters, adapter);
 
 	default_adapter = adapters ? adapters->data : NULL;
+}
+
+static void device_removed(struct bluez_device *device, gpointer user_data)
+{
+	DBG("device removed");
 }
 
 static void object_free(gpointer data)
@@ -182,6 +201,10 @@ int main(int argc, char **argv)
 
 	bluez_manager_set_adapter_watch(manager, adapter_added,
 					adapter_removed, NULL);
+	bluez_manager_set_device_watch(manager, device_added,
+					device_removed, NULL);
+
+	bluez_manager_register_agent(manager, agent_request_callback, NULL);
 
 	bluez_manager_refresh_objects(manager);
 
@@ -190,6 +213,7 @@ int main(int argc, char **argv)
 	bluez_manager_free(manager);
 
 	g_slist_free_full(adapters, object_free);
+	g_slist_free_full(devices, object_free);
 
 	g_source_remove(signal);
 
