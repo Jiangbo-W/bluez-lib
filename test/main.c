@@ -111,6 +111,98 @@ static void agent_request_callback(enum agent_request_type type,
 	bluez_manager_agent_reply(manager, TRUE, NULL);
 }
 
+static void adapter_properties_changed(struct bluez_adapter *adapter,
+							gchar **prop_names)
+{
+	char *name;
+	int i;
+
+	for (i = 0; i < g_strv_length(prop_names); ++i) {
+		name = prop_names[i];
+
+		if (!g_strcmp0(name, "Alias")) {
+			gchar *alias;
+			alias = bluez_adapter_get_alias(adapter);
+			DBG("Alias: %s", alias);
+			g_free(alias);
+		} else if (!g_strcmp0(name, "Class")) {
+			guint32 class;
+			bluez_adapter_get_class(adapter, &class);
+			DBG("Class: %d", class);
+		} else if (!g_strcmp0(name, "Powered")) {
+			gboolean powered;
+			bluez_adapter_get_powered(adapter, &powered);
+			DBG("Powered: %d", powered);
+		} else if (!g_strcmp0(name, "Discoverable")) {
+			gboolean discoverable;
+			bluez_adapter_get_discoverable(adapter, &discoverable);
+			DBG("Discoverable: %d", discoverable);
+		} else if (!g_strcmp0(name, "Pairable")) {
+			gboolean pairable;
+			bluez_adapter_get_pairable(adapter, &pairable);
+			DBG("Piarable: %d", pairable);
+		} else if (!g_strcmp0(name, "DiscoverableTimeout")) {
+			guint32 time;
+			bluez_adapter_get_discoverable_timeout(adapter, &time);
+			DBG("Timeout: %d", time);
+		} else if (!g_strcmp0(name, "UUIDs")) {
+			DBG("UUIDs");
+		} else if (!g_strcmp0(name, "Discovering")) {
+			gboolean discovering;
+			bluez_adapter_get_discovering(adapter, &discovering);
+			DBG("Discovering: %d", discovering);
+		} else
+			DBG("Unknown: %s", name);
+	}
+}
+
+static void device_properties_changed(struct bluez_device *device,
+							gchar **prop_names)
+{
+	char *name;
+	int i;
+
+	for (i = 0; i < g_strv_length(prop_names); ++i) {
+		name = prop_names[i];
+
+		if (!g_strcmp0(name, "Address")) {
+			gchar *dev_addr;
+			dev_addr = bluez_device_get_address(device);
+			DBG("Address: %s", dev_addr);
+			g_free(dev_addr);
+		} else if (!g_strcmp0(name, "Name")) {
+			gchar *dev_name;
+			dev_name = bluez_device_get_name(device);
+			DBG("Name: %s", dev_name);
+			g_free(dev_name);
+		} else if (!g_strcmp0(name, "Alias")) {
+			gchar *dev_alias;
+			dev_alias = bluez_device_get_alias(device);
+			DBG("Alias: %s", dev_alias);
+			g_free(dev_alias);
+		} else if (!g_strcmp0(name, "Class")) {
+			guint32 class;
+			bluez_device_get_class(device, &class);
+			DBG("Class: %d", class);
+		} else if (!g_strcmp0(name, "RSSI")) {
+			gint16 rssi;
+			bluez_device_get_rssi(device, &rssi);
+			DBG("RSSI: %d", rssi);
+		} else if (!g_strcmp0(name, "Paired")) {
+			gboolean paired;
+			bluez_device_get_paired(device, &paired);
+			DBG("Paired: %d", paired);
+		} else if (!g_strcmp0(name, "Connected")) {
+			gboolean connected;
+			bluez_device_get_connected(device, &connected);
+			DBG("Connected: %d", connected);
+		} else if (!g_strcmp0(name, "UUIDs")) {
+			DBG("UUIDs");
+		} else
+			DBG("Unknown: %s", name);
+	}
+}
+
 static void adapter_added(struct bluez_adapter *adapter, gpointer user_data)
 {
 	gchar *name, *addr;
@@ -156,11 +248,17 @@ static void adapter_added(struct bluez_adapter *adapter, gpointer user_data)
 	adapters = g_slist_append(adapters, adapter);
 
 	default_adapter = adapters ? adapters->data : NULL;
+
+	bluez_adapter_set_properties_watch(adapter,
+					adapter_properties_changed, NULL);
 }
 
-static void device_added(struct bluez_device *adapter, gpointer user_data)
+static void device_added(struct bluez_device *device, gpointer user_data)
 {
 	DBG("device added");
+
+	bluez_device_set_properties_watch(device,
+					device_properties_changed, NULL);
 }
 
 static void adapter_removed(struct bluez_adapter *adapter, gpointer user_data)
