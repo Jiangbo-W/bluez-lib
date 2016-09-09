@@ -88,6 +88,52 @@ static void service_properties_changed(GDBusProxy *proxy,
 	g_strfreev(prop_names);
 }
 
+static void service_interface_added(GDBusObject *object,
+				GDBusInterface *interface, gpointer user_data)
+{
+	struct bluez_service *service = (struct bluez_service *) user_data;
+	GDBusProxy *proxy = G_DBUS_PROXY(interface);
+	const gchar *name;
+
+	name = g_dbus_proxy_get_interface_name(proxy);
+	if (g_strcmp0(name, DEVICE_INTERFACE) == 0) {
+		if (service->service_proxy)
+			g_object_unref(service->service_proxy);
+
+		service->service_proxy = g_object_ref(proxy);
+
+		/* connect signal */
+		g_signal_connect(service->service_proxy, "g-properties-changed",
+				G_CALLBACK(service_properties_changed), service);
+	} else if (g_strcmp0(name, PROPERTIES_INTERFACE) == 0) {
+		if (service->properties_proxy)
+			g_object_unref(service->properties_proxy);
+
+		service->properties_proxy = g_object_ref(proxy);
+	}
+}
+
+static void service_interface_removed(GDBusObject *object,
+				GDBusInterface *interface, gpointer user_data)
+{
+	struct bluez_service *service = (struct bluez_service *) user_data;
+	GDBusProxy *proxy = G_DBUS_PROXY(interface);
+	const gchar *name;
+
+	name = g_dbus_proxy_get_interface_name(proxy);
+	if (g_strcmp0(name, ADAPTER_INTERFACE) == 0) {
+		if (service->service_proxy) {
+			g_object_unref(service->service_proxy);
+			service->service_proxy = NULL;
+		}
+	} else if (g_strcmp0(name, PROPERTIES_INTERFACE) == 0) {
+		if (service->properties_proxy) {
+			g_object_unref(service->properties_proxy);
+			service->properties_proxy = NULL;
+		}
+	}
+}
+
 struct bluez_service *bluez_service_new(GDBusObject *object)
 {
 	struct bluez_service *service;
@@ -110,6 +156,11 @@ struct bluez_service *bluez_service_new(GDBusObject *object)
 	g_signal_connect(service->service_proxy, "g-properties-changed",
 			G_CALLBACK(service_properties_changed), service);
 
+	g_signal_connect(object, "interface-added",
+			G_CALLBACK(service_interface_added), service);
+	g_signal_connect(object, "interface-removed",
+			G_CALLBACK(service_interface_removed), service);
+
 	return service;
 }
 
@@ -118,8 +169,10 @@ void bluez_service_free(struct bluez_service *service)
 	if (!service)
 		return;
 
-	g_object_unref(service->service_proxy);
-	g_object_unref(service->properties_proxy);
+	if (service->service_proxy)
+		g_object_unref(service->service_proxy);
+	if (service->properties_proxy)
+		g_object_unref(service->properties_proxy);
 
 	g_free(service);
 }

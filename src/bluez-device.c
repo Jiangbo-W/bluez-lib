@@ -175,6 +175,52 @@ static void device_properties_changed(GDBusProxy *proxy,
 	g_strfreev(prop_names);
 }
 
+static void device_interface_added(GDBusObject *object,
+				GDBusInterface *interface, gpointer user_data)
+{
+	struct bluez_device *device = (struct bluez_device *) user_data;
+	GDBusProxy *proxy = G_DBUS_PROXY(interface);
+	const gchar *name;
+
+	name = g_dbus_proxy_get_interface_name(proxy);
+	if (g_strcmp0(name, DEVICE_INTERFACE) == 0) {
+		if (device->device_proxy)
+			g_object_unref(device->device_proxy);
+
+		device->device_proxy = g_object_ref(proxy);
+
+		/* connect signal */
+		g_signal_connect(device->device_proxy, "g-properties-changed",
+				G_CALLBACK(device_properties_changed), device);
+	} else if (g_strcmp0(name, PROPERTIES_INTERFACE) == 0) {
+		if (device->properties_proxy)
+			g_object_unref(device->properties_proxy);
+
+		device->properties_proxy = g_object_ref(proxy);
+	}
+}
+
+static void device_interface_removed(GDBusObject *object,
+				GDBusInterface *interface, gpointer user_data)
+{
+	struct bluez_device *device = (struct bluez_device *) user_data;
+	GDBusProxy *proxy = G_DBUS_PROXY(interface);
+	const gchar *name;
+
+	name = g_dbus_proxy_get_interface_name(proxy);
+	if (g_strcmp0(name, ADAPTER_INTERFACE) == 0) {
+		if (device->device_proxy) {
+			g_object_unref(device->device_proxy);
+			device->device_proxy = NULL;
+		}
+	} else if (g_strcmp0(name, PROPERTIES_INTERFACE) == 0) {
+		if (device->properties_proxy) {
+			g_object_unref(device->properties_proxy);
+			device->properties_proxy = NULL;
+		}
+	}
+}
+
 struct bluez_device *bluez_device_new(GDBusObject *object)
 {
 	struct bluez_device *device;
@@ -197,6 +243,11 @@ struct bluez_device *bluez_device_new(GDBusObject *object)
 	g_signal_connect(device->device_proxy, "g-properties-changed",
 			G_CALLBACK(device_properties_changed), device);
 
+	g_signal_connect(object, "interface-added",
+			G_CALLBACK(device_interface_added), device);
+	g_signal_connect(object, "interface-removed",
+			G_CALLBACK(device_interface_removed), device);
+
 	return device;
 }
 
@@ -205,8 +256,10 @@ void bluez_device_free(struct bluez_device *device)
 	if (!device)
 		return;
 
-	g_object_unref(device->device_proxy);
-	g_object_unref(device->properties_proxy);
+	if (device->device_proxy)
+		g_object_unref(device->device_proxy);
+	if (device->properties_proxy)
+		g_object_unref(device->properties_proxy);
 
 	g_free(device);
 }

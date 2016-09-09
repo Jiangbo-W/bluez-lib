@@ -200,6 +200,52 @@ static void adapter_properties_changed(GDBusProxy *proxy,
 	g_strfreev(prop_names);
 }
 
+static void adapter_interface_added(GDBusObject *object,
+				GDBusInterface *interface, gpointer user_data)
+{
+	struct bluez_adapter *adapter = (struct bluez_adapter *) user_data;
+	GDBusProxy *proxy = G_DBUS_PROXY(interface);
+	const gchar *name;
+
+	name = g_dbus_proxy_get_interface_name(proxy);
+	if (g_strcmp0(name, ADAPTER_INTERFACE) == 0) {
+		if (adapter->adapter_proxy)
+			g_object_unref(adapter->adapter_proxy);
+
+		adapter->adapter_proxy = g_object_ref(proxy);
+
+		/* connect signal */
+		g_signal_connect(adapter->adapter_proxy, "g-properties-changed",
+				G_CALLBACK(adapter_properties_changed), adapter);
+	} else if (g_strcmp0(name, PROPERTIES_INTERFACE) == 0) {
+		if (adapter->properties_proxy)
+			g_object_unref(adapter->properties_proxy);
+
+		adapter->properties_proxy = g_object_ref(proxy);
+	}
+}
+
+static void adapter_interface_removed(GDBusObject *object,
+				GDBusInterface *interface, gpointer user_data)
+{
+	struct bluez_adapter *adapter = (struct bluez_adapter *) user_data;
+	GDBusProxy *proxy = G_DBUS_PROXY(interface);
+	const gchar *name;
+
+	name = g_dbus_proxy_get_interface_name(proxy);
+	if (g_strcmp0(name, ADAPTER_INTERFACE) == 0) {
+		if (adapter->adapter_proxy) {
+			g_object_unref(adapter->adapter_proxy);
+			adapter->adapter_proxy = NULL;
+		}
+	} else if (g_strcmp0(name, PROPERTIES_INTERFACE) == 0) {
+		if (adapter->properties_proxy) {
+			g_object_unref(adapter->properties_proxy);
+			adapter->properties_proxy = NULL;
+		}
+	}
+}
+
 struct bluez_adapter *bluez_adapter_new(GDBusObject *object)
 {
 	struct bluez_adapter *adapter;
@@ -224,6 +270,11 @@ struct bluez_adapter *bluez_adapter_new(GDBusObject *object)
 	g_signal_connect(adapter->adapter_proxy, "g-properties-changed",
 			G_CALLBACK(adapter_properties_changed), adapter);
 
+	g_signal_connect(object, "interface-added",
+			G_CALLBACK(adapter_interface_added), adapter);
+	g_signal_connect(object, "interface-removed",
+			G_CALLBACK(adapter_interface_removed), adapter);
+
 	return adapter;
 }
 
@@ -232,8 +283,10 @@ void bluez_adapter_free(struct bluez_adapter *adapter)
 	if (!adapter)
 		return;
 
-	g_object_unref(adapter->adapter_proxy);
-	g_object_unref(adapter->properties_proxy);
+	if (adapter->adapter_proxy)
+		g_object_unref(adapter->adapter_proxy);
+	if (adapter->properties_proxy)
+		g_object_unref(adapter->properties_proxy);
 
 	g_free(adapter);
 }
