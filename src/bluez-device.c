@@ -208,7 +208,7 @@ static void device_interface_removed(GDBusObject *object,
 	const gchar *name;
 
 	name = g_dbus_proxy_get_interface_name(proxy);
-	if (g_strcmp0(name, ADAPTER_INTERFACE) == 0) {
+	if (g_strcmp0(name, DEVICE_INTERFACE) == 0) {
 		if (device->device_proxy) {
 			g_object_unref(device->device_proxy);
 			device->device_proxy = NULL;

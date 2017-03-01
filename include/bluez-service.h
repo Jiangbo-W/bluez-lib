@@ -39,6 +39,8 @@ BTResult bluez_service_connect(struct bluez_service *service);
 
 BTResult bluez_service_disconnect(struct bluez_service *service);
 
+gchar **bluez_service_get_property_names(struct bluez_service *service);
+
 gchar *bluez_service_get_device_path(struct bluez_service *service);
 
 gchar *bluez_service_get_state(struct bluez_service *service);

@@ -46,6 +46,11 @@ BTResult bluez_service_disconnect(struct bluez_service *service)
 	return proxy_method_call(service->service_proxy, "Disconnect", NULL);
 }
 
+gchar **bluez_service_get_property_names(struct bluez_service *service)
+{
+	return g_dbus_proxy_get_cached_property_names(service->service_proxy);
+}
+
 gchar *bluez_service_get_device_path(struct bluez_service *service)
 {
 	return property_get_string(service->service_proxy, "Device");
@@ -96,7 +101,7 @@ static void service_interface_added(GDBusObject *object,
 	const gchar *name;
 
 	name = g_dbus_proxy_get_interface_name(proxy);
-	if (g_strcmp0(name, DEVICE_INTERFACE) == 0) {
+	if (g_strcmp0(name, SERVICE_INTERFACE) == 0) {
 		if (service->service_proxy)
 			g_object_unref(service->service_proxy);
 
@@ -121,7 +126,7 @@ static void service_interface_removed(GDBusObject *object,
 	const gchar *name;
 
 	name = g_dbus_proxy_get_interface_name(proxy);
-	if (g_strcmp0(name, ADAPTER_INTERFACE) == 0) {
+	if (g_strcmp0(name, SERVICE_INTERFACE) == 0) {
 		if (service->service_proxy) {
 			g_object_unref(service->service_proxy);
 			service->service_proxy = NULL;
